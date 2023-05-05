@@ -149,14 +149,12 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-module.exports.handler = async function (request, response, context) {
-  const pluginId = request.queries.pluginId;
-  if (!pluginId) {
-    throw new Error('Plugin ID is required.');
-  }
+let browser;
+let queue = Promise.resolve();
 
-  try {
-    const browser =  await puppeteer.launch({
+async function initBrowser() {
+  if (!browser) {
+    browser = await puppeteer.launch({
       headless: true,
       args: [
         "--disable-gpu",
@@ -167,32 +165,39 @@ module.exports.handler = async function (request, response, context) {
         "--no-sandbox",
       ],
     });
+  }
+}
 
+async function processRequest(request, response, context) {
+  // ... 处理请求，使用 browser 对象 ...
+  // 您之前的代码可以放在这里，使用全局的 browser 对象
+  const pluginId = request.queries.pluginId;
+  if (!pluginId) {
+    throw new Error('Plugin ID is required.');
+  }
+
+  try {
+ 
     const mainPage = await browser.newPage();
     const mainExtensionData = await fetchExtensionData(mainPage, pluginId);
-    console.log("Main extension data:", mainExtensionData);
 
     // 获取相关扩展信息
     const relatedExtensions = await fetchRelatedExtensions(mainPage, pluginId);
-    console.log("Related extensions:", relatedExtensions);
     const relatedExtensionsData = [];
     relatedExtensionsData.push(mainExtensionData);
     const topTenRelatedExtensions = relatedExtensions.slice(0, 10);
-    
-    const page = await browser.newPage();
+  
     for (const relatedExtension of topTenRelatedExtensions) {
-      const extensionData = await fetchExtensionData(page, relatedExtension.extension_id);
+      const extensionData = await fetchExtensionData(mainPage, relatedExtension.extension_id);
       if(Object.keys(extensionData).length >0 ){
         relatedExtensionsData.push(extensionData);
       }
     }
-    await page.close();
     console.log("the response:", relatedExtensionsData);
     response.setStatusCode(200);
     response.setHeader('content-type', 'application/json');
     response.send(JSON.stringify(relatedExtensionsData));
     await mainPage.close();
-    await browser.close();
     sleep(1000);
   } catch (err) {
     response.setStatusCode(500);
@@ -200,5 +205,16 @@ module.exports.handler = async function (request, response, context) {
     response.send(err.message);
     console.error("Error:", err.message);
   }
+}
 
+async function enqueueRequest(request, response, context) {
+  const newPromise = queue.then(() => processRequest(request, response, context));
+  queue = newPromise.catch(() => {}); // 忽略错误，继续处理队列中的其他请求
+  return newPromise;
+}
+
+
+module.exports.handler = async function (request, response, context) {
+  await initBrowser();
+  await processRequest(request, response, context);
 };
